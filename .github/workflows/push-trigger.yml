@@ -25,6 +25,7 @@ jobs:
     with:
       SERVICE_LOCATION: ./peru-identity-plugin
       BUILD_ARTIFACT: peru-identity-plugin
+      MAVEN_NON_EXEC_ARTIFACTS: "peru-identity-plugin-0.0.1-SNAPSHOT.jar"
     secrets:
       OSSRH_USER: ${{ secrets.OSSRH_USER }}
       OSSRH_SECRET: ${{ secrets.OSSRH_SECRET }}
