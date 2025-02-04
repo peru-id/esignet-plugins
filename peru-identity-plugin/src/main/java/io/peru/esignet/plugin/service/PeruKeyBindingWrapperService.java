@@ -8,7 +8,6 @@ package io.peru.esignet.plugin.service;
 import com.nimbusds.jose.jwk.RSAKey;
 import io.mosip.esignet.api.dto.AuthChallenge;
 import io.mosip.esignet.api.dto.KeyBindingResult;
-import io.mosip.esignet.api.dto.KycAuthDto;
 import io.mosip.esignet.api.dto.SendOtpResult;
 import io.mosip.esignet.api.exception.KeyBindingException;
 import io.mosip.esignet.api.exception.KycAuthException;
@@ -48,8 +47,7 @@ public class PeruKeyBindingWrapperService implements KeyBinder {
 
     public static final String BINDING_SERVICE_APP_ID = "MOCK_BINDING_SERVICE";
 
-    @Value("#{${mosip.esignet.peru.supported.bind-auth-factor-types}}")
-    private List<String> supportedBindAuthFactorTypes;
+    private List<String> supportedBindAuthFactorTypes = List.of("WLA");
 
     @Autowired
     private KeymanagerService keymanagerService;
@@ -91,23 +89,21 @@ public class PeruKeyBindingWrapperService implements KeyBinder {
             throw new KeyBindingException("invalid_bind_auth_factor_type");
         }
 
-        var kycAuthDto = new KycAuthDto();
-        kycAuthDto.setTransactionId("transactionId");
-        kycAuthDto.setIndividualId(individualId);
-        kycAuthDto.setChallengeList(challengeList);
-
         KycAuth kycAuth= null;
         try {
-            var kycAuthResult = helperService.doKycAuth("", "", kycAuthDto);
+            var kycAuthResult = helperService.validateOtpBasedAuth(individualId, challengeList.get(0));
             if (kycAuthResult == null || kycAuthResult.getKycToken() == null) {
                 throw new KeyBindingException(ErrorConstants.KEY_BINDING_FAILED);
             }
-            kycAuth=cacheService.getKycAuth(kycAuthResult.getKycToken());
-            if(kycAuth==null || kycAuth.getDatosPersona()==null){
-                throw new KeyBindingException("peru-ida-006");
-            }
+
+            kycAuth = cacheService.getKycAuth(kycAuthResult.getKycToken());
+
         } catch (KycAuthException e) {
             throw new KeyBindingException(e.getErrorCode());
+        }
+
+        if(kycAuth==null || kycAuth.getDatosPersona()==null){
+            throw new KeyBindingException("peru-ida-006");
         }
 
         //create a signed certificate, with cn as username
@@ -117,7 +113,7 @@ public class PeruKeyBindingWrapperService implements KeyBinder {
             X509V3CertificateGenerator generator = new X509V3CertificateGenerator();
             String username = kycAuth.getDatosPersona().getPrenombres();
             generator.setSubjectDN(new X500Principal("CN=" + username));
-            generator.setIssuerDN(new X500Principal("CN=Mock-IDA"));
+            generator.setIssuerDN(new X500Principal("CN=Peru-IDA"));
             LocalDateTime notBeforeDate = DateUtils.getUTCCurrentDateTime();
             LocalDateTime notAfterDate = notBeforeDate.plus(expireInDays, ChronoUnit.DAYS);
             generator.setNotBefore(Timestamp.valueOf(notBeforeDate));
@@ -137,6 +133,7 @@ public class PeruKeyBindingWrapperService implements KeyBinder {
                 keyBindingResult.setCertificate(stringWriter.toString());
             }
         } catch (Exception e) {
+            log.error("Failed to perform key binding", e);
             throw new RuntimeException(e);
         }
         keyBindingResult.setPartnerSpecificUserToken(individualId);

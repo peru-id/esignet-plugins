@@ -5,16 +5,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosip.esignet.api.dto.*;
 import io.mosip.esignet.api.exception.KycAuthException;
 import io.mosip.esignet.api.exception.KycExchangeException;
+import io.mosip.esignet.api.spi.KeyBindingValidator;
 import io.mosip.esignet.api.util.ErrorConstants;
-import io.peru.esignet.plugin.dto.KycExchangeRequestDto;
 import io.peru.esignet.plugin.dto.DatosPersona;
 import io.peru.esignet.plugin.dto.Envelope;
-import io.peru.esignet.plugin.util.HttpClient;
+import io.peru.esignet.plugin.util.IdentityAPIClient;
 import io.mosip.kernel.signature.dto.JWTSignatureRequestDto;
 import io.mosip.kernel.signature.dto.JWTSignatureResponseDto;
 import io.mosip.kernel.signature.service.SignatureService;
 import io.peru.esignet.plugin.dto.KycAuth;
-import io.peru.esignet.plugin.dto.KycAuthRequestDto;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,10 +25,11 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.text.SimpleDateFormat;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 @Component
@@ -44,10 +44,10 @@ public class HelperService {
 
     public static final String APPLICATION_ID = "OIDC_SERVICE";
 
-    @Value("${mosip.esignet.peru.authenticator.ida.otp-channels}")
+    @Value("${mosip.esignet.peru.authenticator.otp-channels:email,phone}")
     private List<String> otpChannels;
 
-    @Value("${mosip.esignet.peru.authenticator.ida.otp-value:111111}")
+    @Value("${mosip.esignet.peru.authenticator.otp-value:111111}")
     private String otpValue;
 
     @Value("#{${mosip.esignet.peru.authenticator.auth-factor.kba.field-details}}")
@@ -64,6 +64,12 @@ public class HelperService {
 
     @Autowired
     private CacheService cacheService;
+
+    @Autowired
+    private IdentityAPIClient identityAPIClient;
+
+    @Autowired
+    private KeyBindingValidator keyBindingValidator;
 
     @PostConstruct
     public void initialize() throws KycAuthException {
@@ -93,86 +99,55 @@ public class HelperService {
         return channel != null && otpChannels.contains(channel.toLowerCase());
     }
 
-    public KycAuthResult doKycAuth(String relyingPartyId, String clientId, KycAuthDto kycAuthDto)
-            throws KycAuthException {
-            KycAuthRequestDto kycAuthRequestDto = new KycAuthRequestDto();
-            kycAuthRequestDto.setTransactionId(kycAuthDto.getTransactionId());
-            kycAuthRequestDto.setIndividualId(kycAuthDto.getIndividualId());
-            KycAuthResult kycAuthResult=null;
-            for (AuthChallenge authChallenge : kycAuthDto.getChallengeList()) {
-                switch (authChallenge.getAuthFactorType()) {
-                    case "KBA":
-                        kycAuthResult = validateKnowledgeBasedAuth(kycAuthDto.getIndividualId(), authChallenge);
-                        break;
-                    case "OTP":
-                        kycAuthResult = validateOtpBasedAuth(kycAuthDto);
-                        break;
-                    case "WLA":
-                        kycAuthResult = validateWla(kycAuthDto.getIndividualId(),authChallenge);
-                        break;
-                    default:
-                        throw new KycAuthException("invalid_auth_challenge");
-                }
-            }
-            return  kycAuthResult;
-    }
-
-    public KycExchangeResult kycExchange(String relyingPartyId, String clientId, KycExchangeRequestDto kycExchangeRequestDto) throws KycExchangeException {
-        //TODO validate relying party Id and client Id
-        KycAuth result = cacheService.getKycAuth(kycExchangeRequestDto.getKycToken());
-        if(result==null || result.getDatosPersona()==null ){
-            throw new KycExchangeException("peru-ida-006");
-        }
-        try {
-            Map<String, Object> kyc =buildKycDataBasedOnPolicy(kycExchangeRequestDto.getAcceptedClaims(),result.getDatosPersona());
-            kyc.put("sub", result.getPartnerSpecificUserToken());
-
-            String finalKyc= signKyc(kyc);
-            KycExchangeResult kycExchangeResult = new KycExchangeResult();
-            kycExchangeResult.setEncryptedKyc(finalKyc);
-            return kycExchangeResult;
-        } catch (Exception ex) {
-            log.error("Failed to build kyc data", ex);
-            throw new KycExchangeException("mock-ida-008");
-        }
-    }
-
     protected static LocalDateTime getUTCDateTime() {
         return ZonedDateTime
                 .now(ZoneOffset.UTC).toLocalDateTime();
     }
 
-    private KycAuthResult validateOtpBasedAuth(KycAuthDto kycAuthDto) throws KycAuthException {
+    public KycAuthResult validateOtpBasedAuth(String individualId, AuthChallenge authChallenge) throws KycAuthException {
+        try {
+            if (authChallenge.getAuthFactorType().equals("OTP") &&
+                    authChallenge.getFormat().equals("alpha-numeric") &&
+                    authChallenge.getChallenge().equals(otpValue)) {
+                Envelope envelope = identityAPIClient.getIdentity(individualId);
 
-        KycAuthResult kycAuthResult = new KycAuthResult();
-        AuthChallenge authChallenge = kycAuthDto.getChallengeList().get(0);
-        if (authChallenge.getAuthFactorType().equals("OTP") && authChallenge.getFormat().equals("alpha-numeric")) {
+                if(envelope!=null && envelope.getBody()!=null &&
+                        envelope.getBody().getConsultarResponse()!=null &&
+                        envelope.getBody().getConsultarResponse().getResponseReturn()!=null &&
+                        envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona()!=null) {
 
-            if (authChallenge.getChallenge().equals(otpValue)) {
-                String kycToken = generateB64EncodedHash(ALGO_SHA3_256, UUID.randomUUID().toString());
-                kycAuthResult.setKycToken(kycToken);
-                kycAuthResult.setPartnerSpecificUserToken(kycAuthDto.getIndividualId());
-                cacheService.setKycAuth(kycToken, new KycAuth(kycToken, kycToken, LocalDateTime.now(ZoneOffset.UTC), kycAuthDto.getTransactionId(),
-                        kycAuthDto.getIndividualId()
-                        , null
-                ));
-                return kycAuthResult;
-            } else {
-                throw new KycAuthException(ErrorConstants.AUTH_FAILED);
+                    DatosPersona datosPersona=envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona();
+
+                    String kycToken = generateB64EncodedHash(ALGO_SHA3_256, UUID.randomUUID().toString());
+                    KycAuthResult kycAuthResult = new KycAuthResult();
+                    kycAuthResult.setKycToken(kycToken);
+                    kycAuthResult.setPartnerSpecificUserToken(individualId);
+                    cacheService.setKycAuth(kycToken, new KycAuth(kycToken, kycToken, LocalDateTime.now(ZoneOffset.UTC),
+                            "transactionId", //For production based setup this should be set with valid transaction ID
+                            individualId, datosPersona
+                    ));
+                    return kycAuthResult;
+                }
             }
+        }  catch (Exception e) {
+            log.error("Failed to do the Authentication",e);
+            throw new KycAuthException(ErrorConstants.AUTH_FAILED );
         }
-        return  kycAuthResult;
+        throw new KycAuthException(ErrorConstants.AUTH_FAILED);
     }
 
-    private KycAuthResult validateKnowledgeBasedAuth(String individualId, AuthChallenge authChallenge) throws KycAuthException {
+    public KycAuthResult validateKnowledgeBasedAuth(String individualId, AuthChallenge authChallenge) throws KycAuthException {
 
         KycAuthResult  kycAuthResult= new KycAuthResult();
 
         try {
-            String response= HttpClient.sendSOAPRequest(individualId);
-            Envelope envelope=HttpClient.getResponse(response);
-            if(envelope!=null && envelope.getBody()!=null && envelope.getBody().getConsultarResponse()!=null && envelope.getBody().getConsultarResponse().getResponseReturn()!=null
-            && envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona()!=null){
+            Envelope envelope = identityAPIClient.getIdentity(individualId);
+
+            if(envelope!=null && envelope.getBody()!=null &&
+                    envelope.getBody().getConsultarResponse()!=null &&
+                    envelope.getBody().getConsultarResponse().getResponseReturn()!=null &&
+                    envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona()!=null) {
+
                 DatosPersona datosPersona=envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona();
                 boolean authStatus=verifyKnowledgeBasedChallenge(authChallenge.getChallenge(),datosPersona);
                 if(authStatus){
@@ -187,20 +162,28 @@ public class HelperService {
                 }
             }
         } catch (Exception e) {
-            log.error("Failed to do the Authentication: {}",e);
+            log.error("Failed to do the Authentication",e);
             throw new KycAuthException(ErrorConstants.AUTH_FAILED );
         }
         throw new KycAuthException(ErrorConstants.AUTH_FAILED );
     }
 
-    private KycAuthResult validateWla(String individualId, AuthChallenge authChallenge) throws KycAuthException {
+    public KycAuthResult validateWla(String individualId, AuthChallenge authChallenge) throws KycAuthException {
         KycAuthResult  kycAuthResult= new KycAuthResult();
 
         try {
-            String response= HttpClient.sendSOAPRequest(individualId);
-            Envelope envelope=HttpClient.getResponse(response);
-            if(envelope!=null && envelope.getBody()!=null && envelope.getBody().getConsultarResponse()!=null && envelope.getBody().getConsultarResponse().getResponseReturn()!=null
-                    && envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona()!=null){
+
+            BindingAuthResult bindingAuthResult = keyBindingValidator.validateBindingAuth("transactionId",
+                    individualId, List.of(authChallenge));
+            if(bindingAuthResult == null)
+                throw new KycAuthException(ErrorConstants.AUTH_FAILED );
+
+            Envelope envelope = identityAPIClient.getIdentity(individualId);
+
+            if(envelope!=null && envelope.getBody()!=null &&
+                    envelope.getBody().getConsultarResponse()!=null &&
+                    envelope.getBody().getConsultarResponse().getResponseReturn()!=null &&
+                    envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona()!=null) {
                 DatosPersona datosPersona=envelope.getBody().getConsultarResponse().getResponseReturn().getDatosPersona();
                 String kycToken = generateB64EncodedHash(ALGO_SHA3_256, UUID.randomUUID().toString());
                     kycAuthResult.setKycToken(kycToken);
@@ -212,7 +195,7 @@ public class HelperService {
                     return kycAuthResult;
             }
         } catch (Exception e) {
-            log.error("Failed to do the Authentication: {}",e);
+            log.error("Failed to do the Authentication ",e);
             throw new KycAuthException(ErrorConstants.AUTH_FAILED );
         }
         throw new KycAuthException(ErrorConstants.AUTH_FAILED );
@@ -232,12 +215,16 @@ public class HelperService {
                 if(challengeMap.containsKey(fieldDetail.get(FIELD_ID_KEY))) {
                     String challengeField = fieldDetail.get(FIELD_ID_KEY);
                     String challengeValue = challengeMap.get(challengeField);
-                    if(fieldDetail.get("type").equals("date")) {
-                        challengeValue = new SimpleDateFormat(fieldDetail.get("format")).format(
-                                new SimpleDateFormat(fieldDetail.get("format")).parse(challengeValue));
-                    }
                     String identityDataValue = getIdentityDataFieldValue(datosPersona, challengeField);
-                    if(!identityDataValue.equals(challengeValue)) {
+
+                    if(fieldDetail.get("type").equals("date")) {
+                        LocalDate inputDate = LocalDate.parse(challengeValue);
+                        LocalDate actualDate = LocalDate.parse(identityDataValue, DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+
+                        if(!actualDate.isEqual(inputDate))
+                            return false;
+                    }
+                    else if(!identityDataValue.equals(challengeValue)) {
                         return false;
                     }
                 }
@@ -267,27 +254,27 @@ public class HelperService {
         }
     }
 
-    private Map<String, Object> buildKycDataBasedOnPolicy(List<String> claims,DatosPersona datosPersona) throws KycExchangeException {
+    public Map<String, Object> buildKycDataBasedOnPolicy(List<String> claims,DatosPersona datosPersona) throws KycExchangeException {
         Map<String, Object> kyc = new HashMap<>();
         for (String claim : claims) {
             switch (claim) {
                 case "name":
-                    if (datosPersona.getApellidoCasada() != null) {
+                    if (datosPersona.getPrenombres() != null) {
                         kyc.put("name", datosPersona.getPrenombres());
                     }
                     break;
                 case "gender":
-                    if(datosPersona.getEstadoCivil()!=null){
+                    if(datosPersona.getGenero()!=null){
                        kyc.put("gender",datosPersona.getGenero());
                     }
                     break;
                 case "given_name":
-                    if(datosPersona.getEstadoCivil()!=null){
+                    if(datosPersona.getPrimerApellido()!=null){
                         kyc.put("given_name",datosPersona.getPrimerApellido());
                     }
                     break;
                 case "birthdate":
-                    if(datosPersona.getEstadoCivil()!=null){
+                    if(datosPersona.getFechaNacimiento()!=null){
                         kyc.put("birthdate",datosPersona.getFechaNacimiento());
                     }
                     break;
@@ -296,7 +283,7 @@ public class HelperService {
         return kyc;
     }
 
-    private String signKyc(Map<String, Object> kyc) throws JsonProcessingException {
+    public String signKyc(Map<String, Object> kyc) throws JsonProcessingException {
         String payload = objectMapper.writeValueAsString(kyc);
         JWTSignatureRequestDto jwtSignatureRequestDto = new JWTSignatureRequestDto();
         jwtSignatureRequestDto.setApplicationId(APPLICATION_ID);

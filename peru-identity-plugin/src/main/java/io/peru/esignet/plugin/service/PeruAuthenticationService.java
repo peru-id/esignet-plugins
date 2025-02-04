@@ -10,7 +10,7 @@ import io.mosip.esignet.api.exception.KycAuthException;
 import io.mosip.esignet.api.exception.KycExchangeException;
 import io.mosip.esignet.api.exception.SendOtpException;
 import io.mosip.esignet.api.spi.Authenticator;
-import io.peru.esignet.plugin.dto.KycExchangeRequestDto;
+import io.peru.esignet.plugin.dto.KycAuth;
 import io.mosip.kernel.core.util.StringUtils;
 import io.mosip.kernel.keymanagerservice.dto.AllCertificatesDataResponseDto;
 import io.mosip.kernel.keymanagerservice.dto.CertificateDataResponseDto;
@@ -23,10 +23,7 @@ import org.springframework.validation.annotation.Validated;
 import javax.validation.Valid;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 
 @ConditionalOnProperty(value = "mosip.esignet.integration.authenticator", havingValue = "PeruAuthenticationService")
@@ -42,6 +39,9 @@ public class PeruAuthenticationService implements Authenticator {
     @Autowired
     private HelperService helperService;
 
+    @Autowired
+    private CacheService cacheService;
+
     @Validated
     @Override
     public KycAuthResult doKycAuth(@NotBlank String relyingPartyId, @NotBlank String clientId,
@@ -49,7 +49,24 @@ public class PeruAuthenticationService implements Authenticator {
 
         log.info("Started to build kyc-auth request with transactionId : {} && clientId : {}",
                 kycAuthDto.getTransactionId(), clientId);
-        return helperService.doKycAuth(relyingPartyId, clientId, kycAuthDto);
+
+        KycAuthResult kycAuthResult=null;
+        for (AuthChallenge authChallenge : kycAuthDto.getChallengeList()) {
+            switch (authChallenge.getAuthFactorType()) {
+                case "KBA":
+                    kycAuthResult = helperService.validateKnowledgeBasedAuth(kycAuthDto.getIndividualId(), authChallenge);
+                    break;
+                case "OTP":
+                    kycAuthResult = helperService.validateOtpBasedAuth(kycAuthDto.getIndividualId(), authChallenge);
+                    break;
+                case "WLA":
+                    kycAuthResult = helperService.validateWla(kycAuthDto.getIndividualId(),authChallenge);
+                    break;
+                default:
+                    throw new KycAuthException("invalid_auth_challenge");
+            }
+        }
+        return  kycAuthResult;
     }
 
     @Override
@@ -58,14 +75,24 @@ public class PeruAuthenticationService implements Authenticator {
         log.info("Started to build kyc-exchange request with transactionId : {} && clientId : {}",
                 kycExchangeDto.getTransactionId(), clientId);
         try {
-            KycExchangeRequestDto kycExchangeRequestDto = new KycExchangeRequestDto();
-            kycExchangeRequestDto.setRequestDateTime(HelperService.getUTCDateTime());
-            kycExchangeRequestDto.setTransactionId(kycExchangeDto.getTransactionId());
-            kycExchangeRequestDto.setKycToken(kycExchangeDto.getKycToken());
-            kycExchangeRequestDto.setIndividualId(kycExchangeDto.getIndividualId());
-            kycExchangeRequestDto.setAcceptedClaims(kycExchangeDto.getAcceptedClaims());
-            kycExchangeRequestDto.setClaimLocales(Arrays.asList(kycExchangeDto.getClaimsLocales()));
-            return helperService.kycExchange(relyingPartyId, clientId, kycExchangeRequestDto);
+            KycAuth result = cacheService.getKycAuth(kycExchangeDto.getKycToken());
+            if(result==null || result.getDatosPersona()==null ){
+                throw new KycExchangeException("peru-ida-006");
+            }
+            try {
+                Map<String, Object> kyc = helperService.buildKycDataBasedOnPolicy(kycExchangeDto.getAcceptedClaims(),
+                        result.getDatosPersona());
+                kyc.put("sub", result.getPartnerSpecificUserToken());
+
+                String finalKyc= helperService.signKyc(kyc);
+                KycExchangeResult kycExchangeResult = new KycExchangeResult();
+                kycExchangeResult.setEncryptedKyc(finalKyc);
+                return kycExchangeResult;
+            } catch (Exception ex) {
+                log.error("Failed to build kyc data", ex);
+                throw new KycExchangeException("mock-ida-008");
+            }
+
         } catch (KycExchangeException e) {
             throw e;
         } catch (Exception e) {
