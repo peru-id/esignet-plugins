@@ -26,6 +26,7 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -233,8 +234,7 @@ public class HelperService {
                     String challengeField = fieldDetail.get(FIELD_ID_KEY);
                     String challengeValue = challengeMap.get(challengeField);
                     if(fieldDetail.get("type").equals("date")) {
-                        challengeValue = new SimpleDateFormat(fieldDetail.get("format")).format(
-                                new SimpleDateFormat(fieldDetail.get("format")).parse(challengeValue));
+                        challengeValue =convertToRequiredDateFormat(challengeValue);
                     }
                     String identityDataValue = getIdentityDataFieldValue(datosPersona, challengeField);
                     if(!identityDataValue.equals(challengeValue)) {
@@ -247,6 +247,20 @@ public class HelperService {
             throw new KycAuthException(ErrorConstants.AUTH_FAILED);
         }
         return true;
+    }
+
+    private String convertToRequiredDateFormat(String dateStr) throws KycAuthException {
+        String[] dateFormats = {"dd/MM/yyyy", "dd-MM-yyyy", "yyyy-MM-dd"};
+        for (String format : dateFormats) {
+            try {
+                Date date = new SimpleDateFormat(format).parse(dateStr);
+                return new SimpleDateFormat("dd/MM/yyyy").format(date);
+            } catch (ParseException e) {
+                continue;
+            }
+        }
+        log.error("Failed to decode KBA challenge or compare it with IdentityData for date: {}", dateStr);
+        throw new KycAuthException(ErrorConstants.AUTH_FAILED);
     }
 
     private String getIdentityDataFieldValue(DatosPersona datosPersona,String challengeField) throws Exception {
