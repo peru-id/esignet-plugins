@@ -280,7 +280,7 @@ public class HelperService {
                     break;
                 case "picture":
                     if(datosPersona.getFoto()!=null){
-                        kyc.put("picture",datosPersona.getFoto());
+                        kyc.put("picture", "data:image/jpeg;base64," + datosPersona.getFoto());
                     }
                     break;
             }
