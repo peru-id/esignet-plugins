@@ -62,6 +62,9 @@ public class PeruAuthenticationService implements Authenticator {
                 case "WLA":
                     kycAuthResult = helperService.validateWla(kycAuthDto.getIndividualId(),authChallenge);
                     break;
+                case "CODE":
+                    kycAuthResult = helperService.validateAuthCode(kycAuthDto.getIndividualId(), authChallenge);
+                    break;
                 default:
                     throw new KycAuthException("invalid_auth_challenge");
             }

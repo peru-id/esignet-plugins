@@ -296,4 +296,41 @@ public class HelperService {
         return responseDto.getJwtSignedData();
     }
 
+    public KycAuthResult validateAuthCode(String individualId, AuthChallenge authChallenge) throws KycAuthException {
+        KycAuthResult kycAuthResult = new KycAuthResult();
+
+        try {
+            // Step 1: Retrieve the authorization code
+            String incomingAuthCode = authChallenge.getChallenge();
+            if (incomingAuthCode == null || incomingAuthCode.isEmpty()) {
+                throw new KycAuthException("auth_code_missing");
+            }
+
+            // Step 2: Exchange Auth Code -> Access Token
+            String accessToken = identityAPIClient.exchangeAuthCodeForAccessToken(incomingAuthCode);
+            if (accessToken == null) {
+                throw new KycAuthException("auth_code_exchange_failed");
+            }
+
+            //Fetch UserInfo -> Get DNI
+            String dni = identityAPIClient.fetchUserInfo(accessToken);
+            if (dni != null && !dni.isEmpty()) {
+
+                String transactionId = UUID.randomUUID().toString();
+                //Generate SHA-256 Hash of (DNI + transactionId)
+                String combinedInput = dni + transactionId;
+                String kycToken = generateB64EncodedHash(ALGO_SHA3_256, combinedInput);
+
+                // Set result
+                kycAuthResult.setKycToken(kycToken);
+                kycAuthResult.setPartnerSpecificUserToken(dni);
+                return kycAuthResult;
+            }
+        } catch (Exception e) {
+            log.error("Failed to perform AUTH-CODE based authentication", e);
+        }
+        throw new KycAuthException(ErrorConstants.AUTH_FAILED);
+    }
+
+
 }
