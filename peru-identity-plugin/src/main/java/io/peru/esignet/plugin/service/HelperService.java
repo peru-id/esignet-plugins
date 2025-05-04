@@ -278,6 +278,11 @@ public class HelperService {
                         kyc.put("birthdate",datosPersona.getFechaNacimiento());
                     }
                     break;
+                case "picture":
+                    if(datosPersona.getFoto()!=null){
+                        kyc.put("picture", "data:image/jpeg;base64," + datosPersona.getFoto());
+                    }
+                    break;
             }
         }
         return kyc;
