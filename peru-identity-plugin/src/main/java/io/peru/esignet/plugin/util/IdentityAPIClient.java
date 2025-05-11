@@ -114,7 +114,7 @@ public class IdentityAPIClient {
                     URLEncoder.encode(clientSecret, StandardCharsets.UTF_8),
                     URLEncoder.encode(redirectUri, StandardCharsets.UTF_8));
 
-            try (OutputStream os = connection.getOutputStream()) {
+           try (OutputStream os = connection.getOutputStream()) {
                 os.write(payload.getBytes());
                 os.flush();
             }
