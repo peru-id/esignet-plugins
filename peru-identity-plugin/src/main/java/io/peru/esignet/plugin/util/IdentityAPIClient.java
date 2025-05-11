@@ -141,7 +141,7 @@ public class IdentityAPIClient {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Content-Type", "application/json");
             connection.setDoOutput(true);
-            connection.getHeaderFields().put("Authorization", Collections.singletonList("Bearer=" + accessToken));
+            connection.setRequestProperty("Authorization", "Bearer " + accessToken);
 
             String responseBody = getResponse(connection);
 
