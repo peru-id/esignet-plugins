@@ -78,17 +78,19 @@ public class PeruAuthenticationService implements Authenticator {
         log.info("Started to build kyc-exchange request with transactionId : {} && clientId : {}",
                 kycExchangeDto.getTransactionId(), clientId);
         try {
-            KycAuth result = cacheService.getKycAuth(kycExchangeDto.getKycToken());
-            if(result==null || result.getDatosPersona()==null ){
-                throw new KycExchangeException("peru-ida-006");
-            }
+//            KycAuth result = cacheService.getKycAuth(kycExchangeDto.getKycToken());
+//            if(result==null || result.getDatosPersona()==null ){
+//                throw new KycExchangeException("peru-ida-006");
+//            }
             try {
-                Map<String, Object> kyc = helperService.buildKycDataBasedOnPolicy(kycExchangeDto.getAcceptedClaims(),
-                        result.getDatosPersona());
-                kyc.put("sub", result.getPartnerSpecificUserToken());
-
+//                Map<String, Object> kyc = helperService.buildKycDataBasedOnPolicy(kycExchangeDto.getAcceptedClaims(),
+//                        result.getDatosPersona());
+//                kyc.put("sub", result.getPartnerSpecificUserToken());
+                Map<String, Object> kyc=new HashMap<>();
                 String finalKyc= helperService.signKyc(kyc);
                 KycExchangeResult kycExchangeResult = new KycExchangeResult();
+                kyc.put("UserInfo",kycExchangeDto.getUserInfoResponseType());
+                kyc.put("id",kycExchangeDto.getTransactionId());
                 kycExchangeResult.setEncryptedKyc(finalKyc);
                 return kycExchangeResult;
             } catch (Exception ex) {
